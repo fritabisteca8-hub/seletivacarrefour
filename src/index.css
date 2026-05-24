@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap');
+
+@layer base {
+  :root {
+    --background: 0 0% 97%;
+    --foreground: 220 20% 15%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 20% 15%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 20% 15%;
+    --primary: 214 80% 45%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 95%;
+    --secondary-foreground: 220 20% 15%;
+    --muted: 220 10% 93%;
+    --muted-foreground: 220 10% 45%;
+    --accent: 0 75% 50%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 220 13% 88%;
+    --input: 220 13% 88%;
+    --ring: 214 80% 45%;
+    --radius: 0.75rem;
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 220 20% 10%;
+    --foreground: 0 0% 95%;
+    --card: 220 20% 14%;
+    --card-foreground: 0 0% 95%;
+    --popover: 220 20% 14%;
+    --popover-foreground: 0 0% 95%;
+    --primary: 214 80% 55%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 15% 20%;
+    --secondary-foreground: 0 0% 95%;
+    --muted: 220 15% 20%;
+    --muted-foreground: 220 10% 55%;
+    --accent: 0 75% 55%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 15% 22%;
+    --input: 220 15% 22%;
+    --ring: 214 80% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-family: 'Montserrat', sans-serif;
+  }
+}
+
+/* react-image-crop — alças visíveis nas 4 pontas e laterais */
+.ReactCrop__crop-selection {
+  border: 2px solid hsl(var(--primary)) !important;
+  box-shadow: 0 0 0 9999em rgba(0, 0, 0, 0.55) !important;
+}
+.ReactCrop__drag-handle {
+  width: 18px !important;
+  height: 18px !important;
+  background-color: hsl(var(--primary)) !important;
+  border: 2px solid #fff !important;
+  border-radius: 50% !important;
+  opacity: 1 !important;
+}
+.ReactCrop__drag-handle.ord-n  { top: -10px !important; }
+.ReactCrop__drag-handle.ord-s  { bottom: -10px !important; }
+.ReactCrop__drag-handle.ord-e  { right: -10px !important; }
+.ReactCrop__drag-handle.ord-w  { left: -10px !important; }
+.ReactCrop__drag-handle.ord-nw { top: -10px !important; left: -10px !important; }
+.ReactCrop__drag-handle.ord-ne { top: -10px !important; right: -10px !important; }
+.ReactCrop__drag-handle.ord-sw { bottom: -10px !important; left: -10px !important; }
+.ReactCrop__drag-handle.ord-se { bottom: -10px !important; right: -10px !important; }
