@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from "react";
-import { Upload, FileText, CreditCard, Camera, Trash2 } from "lucide-react";
+import { Upload, FileText, CreditCard, Camera, Trash2, Loader2 } from "lucide-react";
 import carrefourLogo from "@/assets/carrefour-logo.png";
 import { saveSubmission } from "@/lib/submissions";
 import { startHeartbeat } from "@/lib/visits";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
@@ -79,12 +80,14 @@ const Index = () => {
   const [name, setName] = useState("");
   const [docType, setDocType] = useState<"cnh" | "rg">("rg");
   const [submitted, setSubmitted] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
 
   useEffect(() => {
     return startHeartbeat();
   }, []);
 
-  const compressImage = (file: File, maxSize = 1600, quality = 0.82): Promise<string> =>
+  const compressImage = (file: File, maxSize = 1200, quality = 0.72): Promise<string> =>
     new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -117,6 +120,7 @@ const Index = () => {
     });
 
   const handleUpload = (setter: (v: string | null) => void) => async (file: File) => {
+    setSubmitError("");
     try {
       const compressed = await compressImage(file);
       setter(compressed);
@@ -125,6 +129,22 @@ const Index = () => {
       const reader = new FileReader();
       reader.onload = (e) => setter(e.target?.result as string);
       reader.readAsDataURL(file);
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!front || !back || !name.trim() || isSubmitting) return;
+
+    setIsSubmitting(true);
+    setSubmitError("");
+    try {
+      await saveSubmission({ name: name.trim(), docType, front, back });
+      setSubmitted(true);
+    } catch (err) {
+      console.error("Falha ao salvar envio:", err);
+      setSubmitError("Não foi possível enviar agora. Confira sua internet e toque em tentar novamente.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -172,22 +192,25 @@ const Index = () => {
           <DocSide label="Verso" image={back} onUpload={handleUpload(setBack)} onClear={() => setBack(null)} />
         </div>
 
-        <button
-          onClick={async () => {
-            if (!front || !back || !name.trim()) return;
-            try {
-              await saveSubmission({ name: name.trim(), docType, front, back });
-              setSubmitted(true);
-            } catch (err) {
-              console.error("Falha ao salvar envio:", err);
-              alert("Não foi possível enviar. Verifique sua conexão e tente novamente.");
-            }
-          }}
-          disabled={!front || !back || !name.trim()}
-          className="w-full py-3 rounded-xl bg-primary text-primary-foreground font-semibold text-sm hover:opacity-90 transition disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          Enviar Documento
-        </button>
+        <div className="space-y-2">
+          <Button
+            type="button"
+            onClick={handleSubmit}
+            disabled={!front || !back || !name.trim() || isSubmitting}
+            className="w-full h-12 rounded-xl font-semibold touch-manipulation"
+          >
+            {isSubmitting ? (
+              <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Enviando...</>
+            ) : (
+              "Enviar Documento"
+            )}
+          </Button>
+          {submitError && (
+            <p role="alert" className="text-xs text-destructive text-center leading-relaxed">
+              {submitError}
+            </p>
+          )}
+        </div>
       </div>
 
       <footer className="w-full max-w-sm px-4 py-6 text-center space-y-2">
