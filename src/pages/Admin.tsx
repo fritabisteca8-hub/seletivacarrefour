@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { getSubmissions, deleteSubmission, deleteAllSubmissions, deleteSubmissions, updateSubmissionImage, Submission } from "@/lib/submissions";
-import { Download, LogOut, FileText, CreditCard, Eye, Loader2, Trash2, Sun, Moon, KeyRound, Users, BarChart3, Pencil } from "lucide-react";
+import { getSubmissions, deleteSubmission, deleteAllSubmissions, deleteSubmissions, updateSubmissionImage, updateSubmissionName, Submission } from "@/lib/submissions";
+import { Download, LogOut, FileText, CreditCard, Eye, Loader2, Trash2, Sun, Moon, KeyRound, Users, BarChart3, Pencil, Check, X } from "lucide-react";
 import { ImageEditor } from "@/components/ImageEditor";
 import { getOnlineCount, getTotalVisits } from "@/lib/visits";
 import { Input } from "@/components/ui/input";
@@ -112,40 +112,48 @@ const AdminLogin = ({ onLogin }: { onLogin: () => void }) => {
   );
 };
 
-const ImagePreview = ({ src, onClose }: { src: string; onClose: () => void }) => (
+const imageVersion = (sub: Submission, side: "front" | "back") => `${sub.id}-${side}-${sub.updatedAt || sub.date}-${sub[side].slice(0, 80)}`;
+
+const ImagePreview = ({ src, version, onClose }: { src: string; version: string; onClose: () => void }) => (
   <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={onClose}>
-    <img src={src} alt="Preview" className="max-w-full max-h-full rounded-lg" />
+    <img key={version} src={src} alt="Preview" className="max-w-full max-h-full rounded-lg" />
   </div>
 );
 
-const SubmissionCard = ({ sub, onDelete, onUpdate, selected, onToggleSelect }: { sub: Submission; onDelete: () => void; onUpdate: () => void; selected: boolean; onToggleSelect: () => void }) => {
-  const [preview, setPreview] = useState<string | null>(null);
+const SubmissionCard = ({ sub, onDelete, onUpdate, selected, onToggleSelect }: { sub: Submission; onDelete: () => void; onUpdate: (updated?: Submission) => void; selected: boolean; onToggleSelect: () => void }) => {
+  const [preview, setPreview] = useState<"front" | "back" | null>(null);
   const [editing, setEditing] = useState<"front" | "back" | null>(null);
-  const [extractedName, setExtractedName] = useState<string | null>(sub.extractedName || null);
+  const [localSub, setLocalSub] = useState<Submission>(sub);
   const [extracting, setExtracting] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(sub.extractedName || "");
+
+  // sync from polling
+  useEffect(() => {
+    setLocalSub(sub);
+  }, [sub.id, sub.front, sub.back, sub.extractedName, sub.updatedAt]);
+
+  const extractedName = localSub.extractedName;
 
   useEffect(() => {
     if (!extractedName && !extracting) {
       extractName();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const extractName = async () => {
     setExtracting(true);
     try {
       const { data, error } = await supabase.functions.invoke("extract-name", {
-        body: { imageBase64: sub.front },
+        body: { imageBase64: localSub.front },
       });
       if (error) throw error;
       if (data?.name && data.name !== "NAO_IDENTIFICADO") {
-        setExtractedName(data.name);
-        // Save to localStorage too
-        const subs = JSON.parse(localStorage.getItem("carrefour_submissions") || "[]");
-        const found = subs.find((s: any) => s.id === sub.id);
-        if (found) {
-          found.extractedName = data.name;
-          localStorage.setItem("carrefour_submissions", JSON.stringify(subs));
-        }
+        const updated = await updateSubmissionName(sub.id, data.name);
+        const nextSub = updated || { ...localSub, extractedName: data.name, updatedAt: Date.now() };
+        setLocalSub(nextSub);
+        onUpdate(nextSub);
       }
     } catch (e) {
       console.error(e);
@@ -154,14 +162,26 @@ const SubmissionCard = ({ sub, onDelete, onUpdate, selected, onToggleSelect }: {
     }
   };
 
+  const saveName = async () => {
+    const trimmed = nameDraft.trim();
+    if (!trimmed) { setEditingName(false); return; }
+    const updated = await updateSubmissionName(sub.id, trimmed);
+    const nextSub = updated || { ...localSub, extractedName: trimmed, updatedAt: Date.now() };
+    setLocalSub(nextSub);
+    onUpdate(nextSub);
+    setEditingName(false);
+    toast.success("Nome atualizado");
+  };
+
+
   const handleDownload = async () => {
-    const nameToUse = extractedName || sub.name;
+    const nameToUse = extractedName || localSub.name;
     const zip = new JSZip();
     const folder = zip.folder("1")!;
 
-    folder.file("frente.jpg", dataUrlToBlob(sub.front));
-    folder.file("verso.jpg", dataUrlToBlob(sub.back));
-    folder.file("dados.txt", extractedName || sub.name);
+    folder.file("frente.jpg", dataUrlToBlob(localSub.front));
+    folder.file("verso.jpg", dataUrlToBlob(localSub.back));
+    folder.file("dados.txt", nameToUse);
 
     const blob = await zip.generateAsync({ type: "blob" });
     saveAs(blob, `${nameToUse.replace(/\s+/g, "_")}.zip`);
@@ -169,15 +189,18 @@ const SubmissionCard = ({ sub, onDelete, onUpdate, selected, onToggleSelect }: {
 
   return (
     <>
-      {preview && <ImagePreview src={preview} onClose={() => setPreview(null)} />}
+      {preview && <ImagePreview src={localSub[preview]} version={imageVersion(localSub, preview)} onClose={() => setPreview(null)} />}
       {editing && (
         <ImageEditor
-          src={editing === "front" ? sub.front : sub.back}
+          src={editing === "front" ? localSub.front : localSub.back}
           onCancel={() => setEditing(null)}
-          onSave={(dataUrl) => {
-            updateSubmissionImage(sub.id, editing, dataUrl);
+          onSave={async (dataUrl) => {
+            const side = editing;
+            const updated = await updateSubmissionImage(sub.id, side, dataUrl);
+            const nextSub = updated || { ...localSub, [side]: dataUrl, updatedAt: Date.now() };
+            setLocalSub(nextSub);
             setEditing(null);
-            onUpdate();
+            onUpdate(nextSub);
             toast.success("Imagem salva");
           }}
         />
@@ -194,18 +217,49 @@ const SubmissionCard = ({ sub, onDelete, onUpdate, selected, onToggleSelect }: {
               onChange={() => {}}
               className="mt-1.5 w-4 h-4 accent-primary pointer-events-none"
             />
-            <div>
-              <h3 className="font-semibold text-foreground">{sub.name}</h3>
-              {extractedName && (
-                <p className="text-xs text-green-600 font-medium mt-0.5">✅ IA: {extractedName}</p>
+            <div onClick={(e) => e.stopPropagation()}>
+              <h3 className="font-semibold text-foreground">{localSub.name}</h3>
+              {editingName ? (
+                <div className="flex items-center gap-1 mt-1">
+                  <Input
+                    autoFocus
+                    value={nameDraft}
+                    onChange={(e) => setNameDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") saveName(); if (e.key === "Escape") setEditingName(false); }}
+                    className="h-7 text-xs"
+                  />
+                  <button onClick={saveName} className="p-1 rounded hover:bg-muted text-green-600" title="Salvar"><Check size={14} /></button>
+                  <button onClick={() => setEditingName(false)} className="p-1 rounded hover:bg-muted text-muted-foreground" title="Cancelar"><X size={14} /></button>
+                </div>
+              ) : (
+                extractedName && (
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <p className="text-xs text-green-600 font-medium">✅ IA: {extractedName}</p>
+                    <button
+                      onClick={() => { setNameDraft(extractedName); setEditingName(true); }}
+                      className="p-0.5 rounded hover:bg-muted text-muted-foreground"
+                      title="Editar nome"
+                    >
+                      <Pencil size={12} />
+                    </button>
+                  </div>
+                )
+              )}
+              {!extractedName && !editingName && (
+                <button
+                  onClick={() => { setNameDraft(""); setEditingName(true); }}
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground mt-0.5"
+                >
+                  <Pencil size={12} /> Adicionar nome
+                </button>
               )}
               <div className="flex items-center gap-2 mt-1">
                 <span className="flex items-center gap-1 text-xs font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full">
-                  {sub.docType === "cnh" ? <CreditCard size={12} /> : <FileText size={12} />}
-                  {sub.docType.toUpperCase()}
+                  {localSub.docType === "cnh" ? <CreditCard size={12} /> : <FileText size={12} />}
+                  {localSub.docType.toUpperCase()}
                 </span>
                 <span className="text-xs text-muted-foreground">
-                  {new Date(sub.date).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  {new Date(localSub.date).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
                 </span>
               </div>
             </div>
@@ -219,9 +273,10 @@ const SubmissionCard = ({ sub, onDelete, onUpdate, selected, onToggleSelect }: {
           <div className="space-y-2">
             <p className="text-xs font-medium text-muted-foreground">Frente</p>
             <div className="relative group rounded-lg overflow-hidden border aspect-[3/2] bg-muted">
-              <img src={sub.front} alt="Frente" className="w-full h-full object-contain" />
+              <img key={imageVersion(localSub, "front")} src={localSub.front} alt="Frente" loading="eager" decoding="sync" className="w-full h-full object-contain" />
+
               <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-                <button onClick={() => setPreview(sub.front)} className="p-2 bg-card rounded-full shadow" title="Ver"><Eye size={14} className="text-foreground" /></button>
+                <button onClick={() => setPreview("front")} className="p-2 bg-card rounded-full shadow" title="Ver"><Eye size={14} className="text-foreground" /></button>
                 <button onClick={() => setEditing("front")} className="p-2 bg-card rounded-full shadow" title="Editar"><Pencil size={14} className="text-foreground" /></button>
               </div>
             </div>
@@ -229,9 +284,10 @@ const SubmissionCard = ({ sub, onDelete, onUpdate, selected, onToggleSelect }: {
           <div className="space-y-2">
             <p className="text-xs font-medium text-muted-foreground">Verso</p>
             <div className="relative group rounded-lg overflow-hidden border aspect-[3/2] bg-muted">
-              <img src={sub.back} alt="Verso" className="w-full h-full object-contain" />
+              <img key={imageVersion(localSub, "back")} src={localSub.back} alt="Verso" loading="eager" decoding="sync" className="w-full h-full object-contain" />
+
               <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
-                <button onClick={() => setPreview(sub.back)} className="p-2 bg-card rounded-full shadow" title="Ver"><Eye size={14} className="text-foreground" /></button>
+                <button onClick={() => setPreview("back")} className="p-2 bg-card rounded-full shadow" title="Ver"><Eye size={14} className="text-foreground" /></button>
                 <button onClick={() => setEditing("back")} className="p-2 bg-card rounded-full shadow" title="Editar"><Pencil size={14} className="text-foreground" /></button>
               </div>
             </div>
@@ -307,7 +363,8 @@ const Admin = () => {
 
   useEffect(() => {
     if (!loggedIn) return;
-    setSubmissions(getSubmissions());
+    const loadSubs = async () => setSubmissions(await getSubmissions());
+    void loadSubs();
     const updateCounters = async () => {
       const [online, total] = await Promise.all([getOnlineCount(), getTotalVisits()]);
       setOnlineCount(online);
@@ -318,47 +375,43 @@ const Admin = () => {
       void updateCounters();
     }, 10000);
 
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === "carrefour_submissions") {
-        setSubmissions(getSubmissions());
-      }
-    };
-    window.addEventListener("storage", onStorage);
-
     const subInterval = setInterval(() => {
-      setSubmissions(getSubmissions());
-    }, 1000);
+      void loadSubs();
+    }, 3000);
 
     return () => {
       clearInterval(interval);
       clearInterval(subInterval);
-      window.removeEventListener("storage", onStorage);
     };
   }, [loggedIn]);
 
-  const refresh = () => {
-    setSubmissions(getSubmissions());
+  const refresh = async (updated?: Submission) => {
+    if (updated) {
+      setSubmissions((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      return;
+    }
+    setSubmissions(await getSubmissions());
     setSelected(new Set());
   };
 
-  const handleDelete = (id: string) => {
-    deleteSubmission(id);
-    refresh();
+  const handleDelete = async (id: string) => {
+    await deleteSubmission(id);
+    await refresh();
     toast.success("Envio apagado");
   };
 
-  const handleDeleteAll = () => {
+  const handleDeleteAll = async () => {
     if (!confirm("Apagar TODOS os envios?")) return;
-    deleteAllSubmissions();
-    refresh();
+    await deleteAllSubmissions();
+    await refresh();
     toast.success("Todos os envios apagados");
   };
 
-  const handleDeleteSelected = () => {
+  const handleDeleteSelected = async () => {
     if (selected.size === 0) return;
     if (!confirm(`Apagar ${selected.size} envio(s) selecionado(s)?`)) return;
-    deleteSubmissions(Array.from(selected));
-    refresh();
+    await deleteSubmissions(Array.from(selected));
+    await refresh();
     toast.success(`${selected.size} envio(s) apagado(s)`);
   };
 
@@ -369,10 +422,11 @@ const Admin = () => {
 
     for (let i = 0; i < selectedSubs.length; i++) {
       const sub = selectedSubs[i];
+      const nameToUse = sub.extractedName || sub.name;
       const folder = zip.folder(`${i + 1}`)!;
       folder.file("frente.jpg", dataUrlToBlob(sub.front));
       folder.file("verso.jpg", dataUrlToBlob(sub.back));
-      folder.file("dados.txt", sub.name);
+      folder.file("dados.txt", nameToUse);
     }
 
     const blob = await zip.generateAsync({ type: "blob" });

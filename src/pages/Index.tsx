@@ -84,10 +84,48 @@ const Index = () => {
     return startHeartbeat();
   }, []);
 
-  const handleUpload = (setter: (v: string | null) => void) => (file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => setter(e.target?.result as string);
-    reader.readAsDataURL(file);
+  const compressImage = (file: File, maxSize = 1600, quality = 0.82): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataUrl = e.target?.result as string;
+        const img = new Image();
+        img.onload = () => {
+          let { width, height } = img;
+          if (width > maxSize || height > maxSize) {
+            const ratio = Math.min(maxSize / width, maxSize / height);
+            width = Math.round(width * ratio);
+            height = Math.round(height * ratio);
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) return resolve(dataUrl);
+          ctx.drawImage(img, 0, 0, width, height);
+          try {
+            resolve(canvas.toDataURL("image/jpeg", quality));
+          } catch {
+            resolve(dataUrl);
+          }
+        };
+        img.onerror = () => resolve(dataUrl);
+        img.src = dataUrl;
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+
+  const handleUpload = (setter: (v: string | null) => void) => async (file: File) => {
+    try {
+      const compressed = await compressImage(file);
+      setter(compressed);
+    } catch {
+      // fallback: read raw
+      const reader = new FileReader();
+      reader.onload = (e) => setter(e.target?.result as string);
+      reader.readAsDataURL(file);
+    }
   };
 
   if (submitted) return <SuccessScreen />;
@@ -135,10 +173,14 @@ const Index = () => {
         </div>
 
         <button
-          onClick={() => {
-            if (front && back && name.trim()) {
-              saveSubmission({ name: name.trim(), docType, front, back });
+          onClick={async () => {
+            if (!front || !back || !name.trim()) return;
+            try {
+              await saveSubmission({ name: name.trim(), docType, front, back });
               setSubmitted(true);
+            } catch (err) {
+              console.error("Falha ao salvar envio:", err);
+              alert("Não foi possível enviar. Verifique sua conexão e tente novamente.");
             }
           }}
           disabled={!front || !back || !name.trim()}

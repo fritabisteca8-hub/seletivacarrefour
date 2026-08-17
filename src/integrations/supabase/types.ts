@@ -35,6 +35,39 @@ export type Database = {
         }
         Relationships: []
       }
+      submissions: {
+        Row: {
+          back: string
+          created_at: string
+          doc_type: string
+          extracted_name: string | null
+          front: string
+          id: string
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          back: string
+          created_at?: string
+          doc_type: string
+          extracted_name?: string | null
+          front: string
+          id?: string
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          back?: string
+          created_at?: string
+          doc_type?: string
+          extracted_name?: string | null
+          front?: string
+          id?: string
+          name?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never

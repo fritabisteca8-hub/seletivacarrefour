@@ -11,43 +11,50 @@ type Box = { x: number; y: number; w: number; h: number };
 type Mode = "move" | "nw" | "ne" | "sw" | "se" | "n" | "s" | "w" | "e" | null;
 const HANDLES: Exclude<Mode, null | "move">[] = ["nw", "ne", "sw", "se", "n", "s", "w", "e"];
 
-const loadImage = (url: string): Promise<HTMLImageElement> =>
-  new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = url;
-  });
+const MAX_OUTPUT_DIMENSION = 1800;
 
-async function rotateImage(src: string, rotation: number): Promise<string> {
-  if (rotation % 360 === 0) return src;
-  const image = await loadImage(src);
+function canvasToJpeg(canvas: HTMLCanvasElement): string {
+  return canvas.toDataURL("image/jpeg", 0.88);
+}
+
+function rotateLoadedImage(image: HTMLImageElement, rotation: number): string {
+  if (rotation % 360 === 0) return image.currentSrc || image.src;
   const rad = (rotation * Math.PI) / 180;
   const sin = Math.abs(Math.sin(rad));
   const cos = Math.abs(Math.cos(rad));
-  const w = image.width * cos + image.height * sin;
-  const h = image.width * sin + image.height * cos;
+  const naturalWidth = image.naturalWidth || image.width;
+  const naturalHeight = image.naturalHeight || image.height;
+  const w = naturalWidth * cos + naturalHeight * sin;
+  const h = naturalWidth * sin + naturalHeight * cos;
+  const scale = Math.min(1, MAX_OUTPUT_DIMENSION / Math.max(w, h));
   const c = document.createElement("canvas");
-  c.width = w;
-  c.height = h;
-  const ctx = c.getContext("2d")!;
-  ctx.translate(w / 2, h / 2);
+  c.width = Math.max(1, Math.round(w * scale));
+  c.height = Math.max(1, Math.round(h * scale));
+  const ctx = c.getContext("2d");
+  if (!ctx) return image.currentSrc || image.src;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.translate(c.width / 2, c.height / 2);
   ctx.rotate(rad);
-  ctx.drawImage(image, -image.width / 2, -image.height / 2);
-  return c.toDataURL("image/jpeg", 0.92);
+  ctx.drawImage(image, (-naturalWidth * scale) / 2, (-naturalHeight * scale) / 2, naturalWidth * scale, naturalHeight * scale);
+  return canvasToJpeg(c);
 }
 
-async function cropImageData(src: string, box: Box, dispW: number, dispH: number): Promise<string> {
-  const image = await loadImage(src);
+function cropLoadedImage(image: HTMLImageElement, box: Box, dispW: number, dispH: number): string {
   const sx = image.naturalWidth / dispW;
   const sy = image.naturalHeight / dispH;
+  const sourceW = box.w * sx;
+  const sourceH = box.h * sy;
+  const scale = Math.min(1, MAX_OUTPUT_DIMENSION / Math.max(sourceW, sourceH));
   const c = document.createElement("canvas");
-  c.width = Math.round(box.w * sx);
-  c.height = Math.round(box.h * sy);
-  const ctx = c.getContext("2d")!;
-  ctx.drawImage(image, box.x * sx, box.y * sy, box.w * sx, box.h * sy, 0, 0, c.width, c.height);
-  return c.toDataURL("image/jpeg", 0.92);
+  c.width = Math.max(1, Math.round(sourceW * scale));
+  c.height = Math.max(1, Math.round(sourceH * scale));
+  const ctx = c.getContext("2d");
+  if (!ctx) return image.currentSrc || image.src;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(image, box.x * sx, box.y * sy, sourceW, sourceH, 0, 0, c.width, c.height);
+  return canvasToJpeg(c);
 }
 
 const MIN = 30;
@@ -74,61 +81,68 @@ export const ImageEditor = ({ src, onCancel, onSave }: Props) => {
     return () => clearTimeout(id);
   }, [cropMode, workingSrc, resetBox]);
 
-  const applyRotation = async (delta: number) => {
-    setSaving(true);
-    try {
-      const rotated = await rotateImage(workingSrc, delta);
-      setWorkingSrc(rotated);
-      setCropMode(false);
-    } finally {
-      setSaving(false);
-    }
+  const applyRotation = (delta: number) => {
+    const image = imgRef.current;
+    if (!image || !image.complete || !image.naturalWidth) return;
+    const rotated = rotateLoadedImage(image, delta);
+    setWorkingSrc(rotated);
+    setCropMode(false);
   };
 
   const onPointerDown = (e: React.PointerEvent, mode: Mode) => {
     e.preventDefault();
     e.stopPropagation();
-    (e.target as Element).setPointerCapture?.(e.pointerId);
     dragRef.current = { mode, startX: e.clientX, startY: e.clientY, orig: { ...box } };
   };
 
-  const onPointerMove = (e: React.PointerEvent) => {
-    const d = dragRef.current;
-    const img = imgRef.current;
-    if (!d || !d.mode || !img) return;
-    const W = img.clientWidth, H = img.clientHeight;
-    const dx = e.clientX - d.startX, dy = e.clientY - d.startY;
-    const o = d.orig;
-    let x = o.x, y = o.y, w = o.w, h = o.h;
-    if (d.mode === "move") {
-      x = Math.max(0, Math.min(W - w, o.x + dx));
-      y = Math.max(0, Math.min(H - h, o.y + dy));
-    } else {
-      const m = d.mode;
-      if (m.includes("e")) w = Math.max(MIN, Math.min(W - o.x, o.w + dx));
-      if (m.includes("s")) h = Math.max(MIN, Math.min(H - o.y, o.h + dy));
-      if (m.includes("w")) {
-        const nx = Math.max(0, Math.min(o.x + o.w - MIN, o.x + dx));
-        w = o.w + (o.x - nx);
-        x = nx;
+  useEffect(() => {
+    if (!cropMode) return;
+    const move = (e: PointerEvent) => {
+      const d = dragRef.current;
+      const img = imgRef.current;
+      if (!d || !d.mode || !img) return;
+      const W = img.clientWidth, H = img.clientHeight;
+      const dx = e.clientX - d.startX, dy = e.clientY - d.startY;
+      const o = d.orig;
+      let x = o.x, y = o.y, w = o.w, h = o.h;
+      if (d.mode === "move") {
+        x = Math.max(0, Math.min(W - w, o.x + dx));
+        y = Math.max(0, Math.min(H - h, o.y + dy));
+      } else {
+        const m = d.mode;
+        if (m.includes("e")) w = Math.max(MIN, Math.min(W - o.x, o.w + dx));
+        if (m.includes("s")) h = Math.max(MIN, Math.min(H - o.y, o.h + dy));
+        if (m.includes("w")) {
+          const nx = Math.max(0, Math.min(o.x + o.w - MIN, o.x + dx));
+          w = o.w + (o.x - nx);
+          x = nx;
+        }
+        if (m.includes("n")) {
+          const ny = Math.max(0, Math.min(o.y + o.h - MIN, o.y + dy));
+          h = o.h + (o.y - ny);
+          y = ny;
+        }
       }
-      if (m.includes("n")) {
-        const ny = Math.max(0, Math.min(o.y + o.h - MIN, o.y + dy));
-        h = o.h + (o.y - ny);
-        y = ny;
-      }
-    }
-    setBox({ x, y, w, h });
-  };
+      setBox({ x, y, w, h });
+    };
+    const up = () => { dragRef.current = null; };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+  }, [cropMode]);
 
-  const onPointerUp = () => { dragRef.current = null; };
 
   const handleSave = async () => {
     setSaving(true);
     try {
       let finalSrc = workingSrc;
       if (cropMode && imgRef.current && box.w > 5 && box.h > 5) {
-        finalSrc = await cropImageData(finalSrc, box, imgRef.current.clientWidth, imgRef.current.clientHeight);
+        finalSrc = cropLoadedImage(imgRef.current, box, imgRef.current.clientWidth, imgRef.current.clientHeight);
       }
       onSave(finalSrc);
     } finally {
@@ -176,10 +190,8 @@ export const ImageEditor = ({ src, onCancel, onSave }: Props) => {
       <div className="flex-1 min-h-0 overflow-hidden flex items-center justify-center p-3">
         <div
           className="relative inline-block"
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
         >
+
           <img
             ref={imgRef}
             src={workingSrc}
