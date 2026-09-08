@@ -1,1 +1,2 @@
 - [x] Impedir painel de zerar/piscar quando a conexão falhar
+- [x] Carregar a lista do painel imediatamente e buscar somente as fotos próximas da tela
