@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
-import { getSubmissions, deleteSubmission, deleteAllSubmissions, deleteSubmissions, updateSubmissionImage, updateSubmissionName, Submission } from "@/lib/submissions";
+import { useState, useEffect, useRef } from "react";
+import { getSubmissionImages, getSubmissionsMeta, deleteSubmission, deleteAllSubmissions, deleteSubmissions, updateSubmissionImage, updateSubmissionName, Submission } from "@/lib/submissions";
 import { Download, LogOut, FileText, CreditCard, Eye, Loader2, Trash2, Sun, Moon, KeyRound, Users, BarChart3, Pencil, Check, X } from "lucide-react";
 import { ImageEditor } from "@/components/ImageEditor";
 import { getOnlineCount, getTotalVisits } from "@/lib/visits";
@@ -146,26 +146,59 @@ const ImagePreview = ({ src, version, onClose }: { src: string; version: string;
 );
 
 const SubmissionCard = ({ sub, onDelete, onUpdate, selected, onToggleSelect }: { sub: Submission; onDelete: () => void; onUpdate: (updated?: Submission) => void; selected: boolean; onToggleSelect: () => void }) => {
+  const cardRef = useRef<HTMLDivElement>(null);
   const [preview, setPreview] = useState<"front" | "back" | null>(null);
   const [editing, setEditing] = useState<"front" | "back" | null>(null);
   const [localSub, setLocalSub] = useState<Submission>(sub);
   const [extracting, setExtracting] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(sub.extractedName || "");
+  const [shouldLoadImages, setShouldLoadImages] = useState(false);
 
-  // sync from polling
+  // sync from polling — preserve loaded images if incoming has none
   useEffect(() => {
-    setLocalSub(sub);
+    setLocalSub((prev) => ({
+      ...sub,
+      front: sub.front || prev.front,
+      back: sub.back || prev.back,
+    }));
   }, [sub.id, sub.front, sub.back, sub.extractedName, sub.updatedAt]);
+
+  // Only request large image data when the card is close to the viewport.
+  useEffect(() => {
+    const card = cardRef.current;
+    if (!card || shouldLoadImages) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return;
+        setShouldLoadImages(true);
+        observer.disconnect();
+      },
+      { rootMargin: "300px 0px" }
+    );
+    observer.observe(card);
+    return () => observer.disconnect();
+  }, [shouldLoadImages]);
+
+  // Lazy-load images when missing and the card is near the screen.
+  useEffect(() => {
+    if (!shouldLoadImages || (localSub.front && localSub.back)) return;
+    let cancelled = false;
+    void getSubmissionImages(sub.id).then((imgs) => {
+      if (cancelled || !imgs) return;
+      setLocalSub((prev) => ({ ...prev, front: imgs.front, back: imgs.back }));
+    });
+    return () => { cancelled = true; };
+  }, [sub.id, localSub.front, localSub.back, shouldLoadImages]);
 
   const extractedName = localSub.extractedName;
 
   useEffect(() => {
-    if (!extractedName && !extracting) {
+    if (!extractedName && !extracting && localSub.front) {
       extractName();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [localSub.front]);
 
   const extractName = async () => {
     setExtracting(true);
@@ -231,6 +264,7 @@ const SubmissionCard = ({ sub, onDelete, onUpdate, selected, onToggleSelect }: {
         />
       )}
       <div
+        ref={cardRef}
         onClick={onToggleSelect}
         className={`bg-card rounded-xl border p-5 space-y-4 cursor-pointer transition ${selected ? "ring-2 ring-primary" : "hover:border-primary/40"}`}
       >
@@ -298,7 +332,12 @@ const SubmissionCard = ({ sub, onDelete, onUpdate, selected, onToggleSelect }: {
           <div className="space-y-2">
             <p className="text-xs font-medium text-muted-foreground">Frente</p>
             <div className="relative group rounded-lg overflow-hidden border aspect-[3/2] bg-muted">
-              <img key={imageVersion(localSub, "front")} src={localSub.front} alt="Frente" loading="eager" decoding="sync" className="w-full h-full object-contain" />
+              {localSub.front ? (
+                <img key={imageVersion(localSub, "front")} src={localSub.front} alt="Frente" loading="eager" decoding="sync" className="w-full h-full object-contain" />
+              ) : (
+                <div className="w-full h-full animate-pulse bg-muted" />
+              )}
+
 
               <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
                 <button onClick={() => setPreview("front")} className="p-2 bg-card rounded-full shadow" title="Ver"><Eye size={14} className="text-foreground" /></button>
@@ -309,7 +348,12 @@ const SubmissionCard = ({ sub, onDelete, onUpdate, selected, onToggleSelect }: {
           <div className="space-y-2">
             <p className="text-xs font-medium text-muted-foreground">Verso</p>
             <div className="relative group rounded-lg overflow-hidden border aspect-[3/2] bg-muted">
-              <img key={imageVersion(localSub, "back")} src={localSub.back} alt="Verso" loading="eager" decoding="sync" className="w-full h-full object-contain" />
+              {localSub.back ? (
+                <img key={imageVersion(localSub, "back")} src={localSub.back} alt="Verso" loading="eager" decoding="sync" className="w-full h-full object-contain" />
+              ) : (
+                <div className="w-full h-full animate-pulse bg-muted" />
+              )}
+
 
               <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
                 <button onClick={() => setPreview("back")} className="p-2 bg-card rounded-full shadow" title="Ver"><Eye size={14} className="text-foreground" /></button>
@@ -406,21 +450,40 @@ const Admin = () => {
   const [totalVisits, setTotalVisits] = useState(0);
   const [isLoadingSubmissions, setIsLoadingSubmissions] = useState(true);
   const [isReconnecting, setIsReconnecting] = useState(false);
+  const [confirmState, setConfirmState] = useState<{ message: string; onConfirm: () => void } | null>(null);
+  const deletedIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!loggedIn) return;
-    const loadSubs = async () => {
+    let failures = 0;
+
+    // Merge meta rows with existing full rows to keep loaded images.
+    const mergeMeta = (meta: Submission[], prev: Submission[]): Submission[] => {
+      const prevMap = new Map(prev.map((p) => [p.id, p]));
+      return meta.filter((m) => !deletedIdsRef.current.has(m.id)).map((m) => {
+        const existing = prevMap.get(m.id);
+        if (existing && existing.updatedAt === m.updatedAt && existing.front && existing.back) {
+          return { ...existing, extractedName: m.extractedName ?? existing.extractedName };
+        }
+        return existing ? { ...existing, ...m, front: existing.front, back: existing.back } : m;
+      });
+    };
+
+    const loadFast = async () => {
       try {
-        const loaded = await getSubmissions();
-        setSubmissions(loaded);
+        const meta = await getSubmissionsMeta();
+        setSubmissions((prev) => mergeMeta(meta, prev));
+        setIsLoadingSubmissions(false);
         setIsReconnecting(false);
+        failures = 0;
       } catch {
-        setIsReconnecting(true);
-      } finally {
+        failures += 1;
+        if (failures >= 3) setIsReconnecting(true);
         setIsLoadingSubmissions(false);
       }
     };
-    void loadSubs();
+    void loadFast();
+
     const updateCounters = async () => {
       const [online, total] = await Promise.all([getOnlineCount(), getTotalVisits()]);
       if (online !== null) setOnlineCount(online);
@@ -431,8 +494,19 @@ const Admin = () => {
       void updateCounters();
     }, 10000);
 
+    const pollMeta = async () => {
+      try {
+        const meta = await getSubmissionsMeta();
+        setSubmissions((prev) => mergeMeta(meta, prev));
+        setIsReconnecting(false);
+        failures = 0;
+      } catch {
+        failures += 1;
+        if (failures >= 3) setIsReconnecting(true);
+      }
+    };
     const subInterval = setInterval(() => {
-      void loadSubs();
+      void pollMeta();
     }, 3000);
 
     return () => {
@@ -447,7 +521,7 @@ const Admin = () => {
       return;
     }
     try {
-      setSubmissions(await getSubmissions());
+      setSubmissions(await getSubmissionsMeta());
       setIsReconnecting(false);
     } catch {
       setIsReconnecting(true);
@@ -455,25 +529,65 @@ const Admin = () => {
     setSelected(new Set());
   };
 
+  const removeLocally = (ids: string[]) => {
+    ids.forEach((id) => deletedIdsRef.current.add(id));
+    setSubmissions((prev) => prev.filter((s) => !ids.includes(s.id)));
+    setSelected((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => next.delete(id));
+      return next;
+    });
+  };
+
+  const restoreLocally = (ids: string[]) => {
+    ids.forEach((id) => deletedIdsRef.current.delete(id));
+    void refresh();
+  };
+
   const handleDelete = async (id: string) => {
-    await deleteSubmission(id);
-    await refresh();
-    toast.success("Envio apagado");
+    removeLocally([id]);
+    try {
+      await deleteSubmission(id);
+      toast.success("Envio apagado");
+    } catch {
+      restoreLocally([id]);
+      toast.error("Não foi possível apagar. Tente de novo.");
+    }
   };
 
-  const handleDeleteAll = async () => {
-    if (!confirm("Apagar TODOS os envios?")) return;
-    await deleteAllSubmissions();
-    await refresh();
-    toast.success("Todos os envios apagados");
+  const handleDeleteAll = () => {
+    setConfirmState({
+      message: "Apagar TODOS os envios?",
+      onConfirm: async () => {
+        const ids = submissions.map((s) => s.id);
+        removeLocally(ids);
+        try {
+          await deleteAllSubmissions();
+          toast.success("Todos os envios apagados");
+        } catch {
+          restoreLocally(ids);
+          toast.error("Não foi possível apagar. Tente de novo.");
+        }
+      },
+    });
   };
 
-  const handleDeleteSelected = async () => {
+  const handleDeleteSelected = () => {
     if (selected.size === 0) return;
-    if (!confirm(`Apagar ${selected.size} envio(s) selecionado(s)?`)) return;
-    await deleteSubmissions(Array.from(selected));
-    await refresh();
-    toast.success(`${selected.size} envio(s) apagado(s)`);
+    const ids = Array.from(selected);
+    setConfirmState({
+      message: `Apagar ${ids.length} envio(s) selecionado(s)?`,
+      onConfirm: async () => {
+        removeLocally(ids);
+        try {
+          await deleteSubmissions(ids);
+          toast.success(`${ids.length} envio(s) apagado(s)`);
+        } catch {
+          restoreLocally(ids);
+          toast.error("Não foi possível apagar. Tente de novo.");
+        }
+      },
+    });
   };
 
   const handleDownloadSelected = async () => {
@@ -485,8 +599,15 @@ const Admin = () => {
       const sub = selectedSubs[i];
       const nameToUse = sub.extractedName || sub.name;
       const folder = zip.folder(`${i + 1}`)!;
-      folder.file("frente.jpg", dataUrlToBlob(sub.front));
-      folder.file("verso.jpg", dataUrlToBlob(sub.back));
+      let front = sub.front;
+      let back = sub.back;
+      if (!front || !back) {
+        const imgs = await getSubmissionImages(sub.id);
+        front = imgs?.front || front;
+        back = imgs?.back || back;
+      }
+      if (front) folder.file("frente.jpg", dataUrlToBlob(front));
+      if (back) folder.file("verso.jpg", dataUrlToBlob(back));
       folder.file("dados.txt", nameToUse);
     }
 
@@ -510,6 +631,31 @@ const Admin = () => {
   return (
     <div className={`${darkMode ? "dark" : ""} min-h-screen bg-background`}>
       {showChangePass && <ChangePasswordModal onClose={() => setShowChangePass(false)} />}
+      {confirmState && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="bg-card border rounded-2xl p-5 w-full max-w-sm space-y-4">
+            <p className="text-sm text-foreground">{confirmState.message}</p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmState(null)}
+                className="px-3 py-2 rounded-xl border text-xs font-medium text-foreground hover:bg-muted transition"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => {
+                  const action = confirmState.onConfirm;
+                  setConfirmState(null);
+                  void action();
+                }}
+                className="px-3 py-2 rounded-xl bg-destructive text-destructive-foreground text-xs font-medium hover:opacity-90 transition"
+              >
+                Apagar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <header className="bg-card border-b sticky top-0 z-10">
         <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between">
           <div>
