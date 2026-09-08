@@ -1,0 +1,1 @@
+- [x] Impedir painel de zerar/piscar quando a conexão falhar
