@@ -51,7 +51,7 @@ export const getSubmissions = async (): Promise<Submission[]> => {
     .order("created_at", { ascending: false });
   if (error) {
     console.error(error);
-    return [];
+    throw error;
   }
   return (data as Row[]).map(rowToSub);
 };

@@ -9,9 +9,19 @@ import { saveAs } from "file-saver";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 
-// localStorage-based admin password functions
-const isFirstAccess = () => !localStorage.getItem("admin_pass");
-const getAdminPass = () => localStorage.getItem("admin_pass") || "";
+// Database-backed admin password (shared across devices)
+const hashPassword = async (pass: string): Promise<string> => {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pass));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+};
+const fetchAdminHash = async (): Promise<string | null> => {
+  const { data } = await (supabase.from("admin_settings" as any) as any).select("password_hash").eq("id", 1).maybeSingle();
+  return (data as any)?.password_hash ?? null;
+};
+const saveAdminHash = async (hash: string) => {
+  const { error } = await (supabase.from("admin_settings" as any) as any).upsert({ id: 1, password_hash: hash, updated_at: new Date().toISOString() });
+  if (error) throw error;
+};
 
 const dataUrlToBlob = (dataUrl: string): Blob => {
   const [header, base64] = dataUrl.split(",");
@@ -39,14 +49,22 @@ const SetupPassword = ({ onSetup }: { onSetup: () => void }) => {
   const [confirmPass, setConfirmPass] = useState("");
   const [error, setError] = useState("");
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [saving, setSaving] = useState(false);
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     if (newPass.length < 4) { setError("A senha deve ter pelo menos 4 caracteres"); return; }
     if (newPass !== confirmPass) { setError("As senhas não coincidem"); return; }
-    localStorage.setItem("admin_pass", newPass);
-    toast.success("Senha criada com sucesso!");
-    onSetup();
+    setSaving(true);
+    try {
+      await saveAdminHash(await hashPassword(newPass));
+      toast.success("Senha criada com sucesso!");
+      onSetup();
+    } catch {
+      setError("Não foi possível salvar. Tente novamente.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -76,12 +94,19 @@ const AdminLogin = ({ onLogin }: { onLogin: () => void }) => {
   const [pass, setPass] = useState("");
   const [error, setError] = useState(false);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const [checking, setChecking] = useState(false);
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (pass === getAdminPass()) {
-      onLogin();
-    } else {
+    setChecking(true);
+    try {
+      const stored = await fetchAdminHash();
+      const hashed = await hashPassword(pass);
+      if (stored && stored === hashed) onLogin();
+      else setError(true);
+    } catch {
       setError(true);
+    } finally {
+      setChecking(false);
     }
   };
 
@@ -318,13 +343,15 @@ const ChangePasswordModal = ({ onClose }: { onClose: () => void }) => {
   const [confirmPass, setConfirmPass] = useState("");
   const [error, setError] = useState("");
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    if (currentPass !== getAdminPass()) { setError("Senha atual incorreta"); return; }
+    const stored = await fetchAdminHash();
+    const currentHash = await hashPassword(currentPass);
+    if (!stored || stored !== currentHash) { setError("Senha atual incorreta"); return; }
     if (newPass.length < 4) { setError("A nova senha deve ter pelo menos 4 caracteres"); return; }
     if (newPass !== confirmPass) { setError("As senhas não coincidem"); return; }
-    localStorage.setItem("admin_pass", newPass);
+    await saveAdminHash(await hashPassword(newPass));
     toast.success("Senha alterada com sucesso!");
     onClose();
   };
@@ -351,8 +378,25 @@ const ChangePasswordModal = ({ onClose }: { onClose: () => void }) => {
   );
 };
 
+const ADMIN_SESSION_KEY = "admin_session_v1";
 const Admin = () => {
-  const [loggedIn, setLoggedIn] = useState(false);
+  const [loggedIn, setLoggedIn] = useState<boolean>(() => {
+    try { return localStorage.getItem(ADMIN_SESSION_KEY) === "1"; } catch { return false; }
+  });
+  const [hasPassword, setHasPassword] = useState<boolean | null>(null);
+  useEffect(() => {
+    try {
+      if (loggedIn) localStorage.setItem(ADMIN_SESSION_KEY, "1");
+      else localStorage.removeItem(ADMIN_SESSION_KEY);
+    } catch {}
+    void fetchAdminHash().then((h) => {
+      setHasPassword(!!h);
+      if (!h) {
+        try { localStorage.removeItem(ADMIN_SESSION_KEY); } catch {}
+        setLoggedIn(false);
+      }
+    }).catch(() => setHasPassword((prev) => prev ?? true));
+  }, [loggedIn]);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [darkMode, setDarkMode] = useState(true);
@@ -360,15 +404,27 @@ const Admin = () => {
   const [activeTab, setActiveTab] = useState<"rg" | "cnh">("rg");
   const [onlineCount, setOnlineCount] = useState(0);
   const [totalVisits, setTotalVisits] = useState(0);
+  const [isLoadingSubmissions, setIsLoadingSubmissions] = useState(true);
+  const [isReconnecting, setIsReconnecting] = useState(false);
 
   useEffect(() => {
     if (!loggedIn) return;
-    const loadSubs = async () => setSubmissions(await getSubmissions());
+    const loadSubs = async () => {
+      try {
+        const loaded = await getSubmissions();
+        setSubmissions(loaded);
+        setIsReconnecting(false);
+      } catch {
+        setIsReconnecting(true);
+      } finally {
+        setIsLoadingSubmissions(false);
+      }
+    };
     void loadSubs();
     const updateCounters = async () => {
       const [online, total] = await Promise.all([getOnlineCount(), getTotalVisits()]);
-      setOnlineCount(online);
-      setTotalVisits(total);
+      if (online !== null) setOnlineCount(online);
+      if (total !== null) setTotalVisits(total);
     };
     void updateCounters();
     const interval = setInterval(() => {
@@ -390,7 +446,12 @@ const Admin = () => {
       setSubmissions((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
       return;
     }
-    setSubmissions(await getSubmissions());
+    try {
+      setSubmissions(await getSubmissions());
+      setIsReconnecting(false);
+    } catch {
+      setIsReconnecting(true);
+    }
     setSelected(new Set());
   };
 
@@ -442,7 +503,8 @@ const Admin = () => {
     });
   };
 
-  if (!loggedIn && isFirstAccess()) return <SetupPassword onSetup={() => setLoggedIn(true)} />;
+  if (!loggedIn && hasPassword === null) return <div className="dark min-h-screen bg-background flex items-center justify-center"><Loader2 className="animate-spin text-primary" /></div>;
+  if (!loggedIn && hasPassword === false) return <SetupPassword onSetup={() => { setHasPassword(true); setLoggedIn(true); }} />;
   if (!loggedIn) return <AdminLogin onLogin={() => setLoggedIn(true)} />;
 
   return (
@@ -518,7 +580,16 @@ const Admin = () => {
       )}
 
       <main className="max-w-3xl mx-auto px-4 py-4 space-y-4">
-        {submissions.length === 0 ? (
+        {isReconnecting && (
+          <div className="mb-4 rounded-lg border border-accent/40 bg-accent/10 px-4 py-3 text-center text-xs text-accent-foreground">
+            Reconectando… Os envios salvos serão mantidos na tela.
+          </div>
+        )}
+        {isLoadingSubmissions ? (
+          <div className="text-center py-16">
+            <p className="text-muted-foreground text-sm">Carregando envios…</p>
+          </div>
+        ) : submissions.length === 0 && !isReconnecting ? (
           <div className="text-center py-16">
             <p className="text-muted-foreground text-sm">Nenhum envio recebido ainda.</p>
           </div>

@@ -56,7 +56,7 @@ export const startHeartbeat = () => {
   };
 };
 
-export const getOnlineCount = async (): Promise<number> => {
+export const getOnlineCount = async (): Promise<number | null> => {
   const cutoff = new Date(Date.now() - ONLINE_WINDOW_MS).toISOString();
   const { count, error } = await supabase
     .from("page_visits")
@@ -65,20 +65,20 @@ export const getOnlineCount = async (): Promise<number> => {
 
   if (error) {
     console.error("Erro ao buscar acessos online:", error);
-    return 0;
+    return null;
   }
 
   return count || 0;
 };
 
-export const getTotalVisits = async (): Promise<number> => {
+export const getTotalVisits = async (): Promise<number | null> => {
   const { count, error } = await supabase
     .from("page_visits")
     .select("id", { count: "exact", head: true });
 
   if (error) {
     console.error("Erro ao buscar total de acessos:", error);
-    return 0;
+    return null;
   }
 
   return count || 0;
